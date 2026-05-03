@@ -20,7 +20,7 @@ Do **not** lift `UV_PYTHON_DOWNLOADS=never` without also bumping the Nix-pinned 
 
 ```bash
 # Run the converter
-uv run python keep_to_standardnotes.py <KEEP_DIR> <OUTPUT_FILE> [--include-trashed]
+uv run python keep_to_standardnotes.py <KEEP_DIR> <OUTPUT_FILE> [--include-trashed] [--super]
 
 # Sync venv from pyproject.toml + uv.lock (e.g. after pulling)
 uv sync
@@ -50,12 +50,14 @@ Two namespace constants govern `appData`:
 | Keep field | Standard Notes target |
 |---|---|
 | `title` / first non-empty body line / `"Untitled"` | `content.title` (derived in `derive_title`, strips Markdown checkbox prefixes from the first-line fallback) |
-| `textContent` | `content.text` |
-| `listContent` | Markdown `- [ ]` / `- [x]` checkboxes (checked status preserved) |
+| `textContent` | `content.text` (Markdown by default; JSON-stringified Lexical paragraphs under `--super`) |
+| `listContent` | Markdown `- [ ]` / `- [x]` checkboxes by default; under `--super` a real Lexical `list` node with `listType: "check"` (interactive checklist) |
 | `isPinned` / `isArchived` / `isTrashed` | `content.pinned` / `.archived` / `.trashed` |
 | `createdTimestampUsec` / `userEditedTimestampUsec` | `created_at` / `updated_at` — Keep uses µs-since-epoch, SN uses ISO 8601 UTC; see `usec_to_iso` |
 | `labels[].name` | A separate `Tag` item per label, with `references[]` pointing to each note's UUID |
-| `annotations[]` / `attachments[]` / `sharees[]` | Rendered as Markdown trailer sections **and** stored verbatim in `appData[KEEP_NS]` |
+| `annotations[]` / `attachments[]` / `sharees[]` | Rendered as Markdown trailer sections (or Lexical heading + bullet list under `--super`, with annotation URLs as real `link` nodes) **and** stored verbatim in `appData[KEEP_NS]` |
+
+Under `--super`, each note's `content` additionally carries `noteType: "super"`, `editorIdentifier: "com.standardnotes.super-editor"`, `spellcheck: true`, and a `preview_plain` excerpt (without it, the SN note list shows the raw Lexical JSON blob until the app re-renders).
 
 ### Build pipeline (in `main`)
 
@@ -67,6 +69,7 @@ Two namespace constants govern `appData`:
 
 ## Intentional design choices (don't "clean up")
 
-- **Trailer text duplicates `appData`.** Annotations/attachments/sharees are rendered into the note body in Markdown *and* preserved verbatim under `appData[KEEP_NS]`. The body copy is for human readability inside Standard Notes; the appData copy is for lossless round-tripping. Keep both.
+- **Trailer text duplicates `appData`.** Annotations/attachments/sharees are rendered into the note body (Markdown, or Lexical nodes under `--super`) *and* preserved verbatim under `appData[KEEP_NS]`. The body copy is for human readability inside Standard Notes; the appData copy is for lossless round-tripping. Keep both.
+- **`--super` is opt-in, plaintext is the default.** The plaintext path stays the byte-for-byte default so existing imports don't drift. `--super` switches every note in the run to the Lexical-backed Super editor; there is no per-note mix-and-match.
 - **Attachments are never embedded.** Standard Notes' import format has no binary slot. `render_attachments` writes only the file path + mimetype list; the actual files stay in the Takeout directory and must be reattached manually.
 - **`from __future__ import annotations`** is in effect. The codebase uses PEP 604 (`int | None`) and PEP 585 (`dict[str, Any]`) syntax. The project pins Python 3.12 via `requires-python` and the flake.

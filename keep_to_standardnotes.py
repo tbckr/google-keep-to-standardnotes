@@ -66,6 +66,10 @@ from typing import Any
 KEEP_NS = "de.tbckr.google_keep_import"
 SN_NS = "org.standardnotes.sn"
 
+# Standard Notes Super editor (Lexical-based rich text).
+SUPER_NOTE_TYPE = "super"
+SUPER_EDITOR_ID = "com.standardnotes.super-editor"
+
 
 # ---------- Helpers ---------------------------------------------------------
 
@@ -149,6 +153,183 @@ def render_sharees(sharees: list[dict[str, Any]]) -> str:
     return "\n".join(out)
 
 
+# ---------- Lexical (Super editor) helpers ----------------------------------
+#
+# Standard Notes' Super editor stores its document as a JSON-stringified
+# Lexical EditorState in `content.text`. These builders return plain dicts
+# matching Lexical's serialization shape — see lexical.dev/docs/concepts/
+# serialization. Every element node carries `direction` / `format` / `indent`
+# / `version`; values are explicit so the JSON shape stays auditable.
+
+def lex_text(text: str, format_bits: int = 0) -> dict[str, Any]:
+    return {
+        "type": "text",
+        "detail": 0,
+        "format": format_bits,
+        "mode": "normal",
+        "style": "",
+        "text": text,
+        "version": 1,
+    }
+
+
+def lex_paragraph(children: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "type": "paragraph",
+        "children": children,
+        "direction": "ltr",
+        "format": "",
+        "indent": 0,
+        "version": 1,
+        "textFormat": 0,
+        "textStyle": "",
+    }
+
+
+def lex_heading(level: int, text: str) -> dict[str, Any]:
+    return {
+        "type": "heading",
+        "tag": f"h{level}",
+        "children": [lex_text(text)],
+        "direction": "ltr",
+        "format": "",
+        "indent": 0,
+        "version": 1,
+    }
+
+
+def lex_list(list_type: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "type": "list",
+        "listType": list_type,
+        "tag": "ol" if list_type == "number" else "ul",
+        "start": 1,
+        "children": items,
+        "direction": "ltr",
+        "format": "",
+        "indent": 0,
+        "version": 1,
+    }
+
+
+def lex_listitem(
+    children: list[dict[str, Any]],
+    value: int,
+    checked: bool | None = None,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "type": "listitem",
+        "children": children,
+        "value": value,
+        "direction": "ltr",
+        "format": "",
+        "indent": 0,
+        "version": 1,
+    }
+    # `checked` is required for check lists, omitted otherwise.
+    if checked is not None:
+        item["checked"] = checked
+    return item
+
+
+def lex_link(url: str, text: str) -> dict[str, Any]:
+    return {
+        "type": "link",
+        "url": url,
+        "target": None,
+        "rel": None,
+        "children": [lex_text(text)],
+        "direction": "ltr",
+        "format": "",
+        "indent": 0,
+        "version": 1,
+    }
+
+
+def lex_doc(children: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "root": {
+            "type": "root",
+            "children": children,
+            "direction": "ltr",
+            "format": "",
+            "indent": 0,
+            "version": 1,
+        }
+    }
+
+
+def build_super_body(note: dict[str, Any]) -> dict[str, Any]:
+    """Build a Lexical EditorState for the Super editor (not yet stringified)."""
+    children: list[dict[str, Any]] = []
+
+    text_content = note.get("textContent")
+    if text_content:
+        for line in text_content.split("\n"):
+            if line:
+                children.append(lex_paragraph([lex_text(line)]))
+            else:
+                children.append(lex_paragraph([]))
+
+    list_content = note.get("listContent") or []
+    if list_content:
+        items = []
+        for i, item in enumerate(list_content, start=1):
+            text = (item.get("text") or "").rstrip()
+            checked = bool(item.get("isChecked", False))
+            items.append(
+                lex_listitem([lex_text(text)], value=i, checked=checked)
+            )
+        children.append(lex_list("check", items))
+
+    annotations = note.get("annotations") or []
+    if annotations:
+        children.append(lex_heading(3, "Links from Google Keep"))
+        items = []
+        i = 0
+        for a in annotations:
+            url = a.get("url") or ""
+            if not url:
+                continue
+            i += 1
+            title = (a.get("title") or "").strip() or url
+            desc = (a.get("description") or "").strip()
+            inlines: list[dict[str, Any]] = [lex_link(url, title)]
+            if desc:
+                inlines.append(lex_text(f" — {desc}"))
+            items.append(lex_listitem(inlines, value=i))
+        if items:
+            children.append(lex_list("bullet", items))
+
+    attachments = note.get("attachments") or []
+    if attachments:
+        children.append(lex_heading(3, "Attachments from Google Keep"))
+        items = []
+        for i, a in enumerate(attachments, start=1):
+            filepath = a.get("filePath") or ""
+            mimetype = a.get("mimetype") or ""
+            # 16 = code formatting (Lexical text-format bitmask).
+            inlines = [lex_text(filepath, format_bits=16), lex_text(f" ({mimetype})")]
+            items.append(lex_listitem(inlines, value=i))
+        children.append(lex_list("bullet", items))
+
+    sharees = note.get("sharees") or []
+    if sharees:
+        children.append(lex_heading(3, "Shared with (Google Keep)"))
+        items = []
+        for i, s in enumerate(sharees, start=1):
+            email = s.get("email") or ""
+            is_owner = bool(s.get("isOwner", False))
+            text = email + (" (owner)" if is_owner else "")
+            items.append(lex_listitem([lex_text(text)], value=i))
+        children.append(lex_list("bullet", items))
+
+    if not children:
+        children = [lex_paragraph([])]
+
+    return lex_doc(children)
+
+
 def build_body(note: dict[str, Any]) -> str:
     """Build the note body from textContent / listContent plus trailers."""
     parts: list[str] = []
@@ -178,40 +359,63 @@ def build_body(note: dict[str, Any]) -> str:
 
 # ---------- Conversion ------------------------------------------------------
 
-def convert_note(note: dict[str, Any], source_filename: str) -> tuple[dict[str, Any], str]:
+def convert_note(
+    note: dict[str, Any],
+    source_filename: str,
+    super_mode: bool = False,
+) -> tuple[dict[str, Any], str]:
     note_uuid = str(uuid.uuid4())
 
     created_iso = usec_to_iso(note.get("createdTimestampUsec")) or now_iso()
     updated_iso = usec_to_iso(note.get("userEditedTimestampUsec")) or created_iso
 
-    body = build_body(note)
-    title = derive_title(note, body)
+    # Plaintext body always built — used for title and (in super mode) preview.
+    body_plain = build_body(note)
+    title = derive_title(note, body_plain)
+
+    if super_mode:
+        lexical_doc = build_super_body(note)
+        content_text = json.dumps(
+            lexical_doc, ensure_ascii=False, separators=(",", ":")
+        )
+    else:
+        content_text = body_plain
+
+    content: dict[str, Any] = {
+        "title": title,
+        "text": content_text,
+        "references": [],
+        "trashed": bool(note.get("isTrashed", False)),
+        "pinned": bool(note.get("isPinned", False)),
+        "archived": bool(note.get("isArchived", False)),
+        "appData": {
+            SN_NS: {
+                "client_updated_at": updated_iso,
+            },
+            KEEP_NS: {
+                "source_file": source_filename,
+                "color": note.get("color", "DEFAULT"),
+                # Full original for later recovery / inspection.
+                # Standard Notes passes arbitrary appData keys through.
+                "original": note,
+            },
+        },
+    }
+
+    if super_mode:
+        # Without preview_plain, the SN note list shows the raw Lexical JSON
+        # blob until the app re-renders the note. Cap the excerpt for sanity.
+        content["noteType"] = SUPER_NOTE_TYPE
+        content["editorIdentifier"] = SUPER_EDITOR_ID
+        content["spellcheck"] = True
+        content["preview_plain"] = body_plain[:160]
 
     item: dict[str, Any] = {
         "uuid": note_uuid,
         "content_type": "Note",
         "created_at": created_iso,
         "updated_at": updated_iso,
-        "content": {
-            "title": title,
-            "text": body,
-            "references": [],
-            "trashed": bool(note.get("isTrashed", False)),
-            "pinned": bool(note.get("isPinned", False)),
-            "archived": bool(note.get("isArchived", False)),
-            "appData": {
-                SN_NS: {
-                    "client_updated_at": updated_iso,
-                },
-                KEEP_NS: {
-                    "source_file": source_filename,
-                    "color": note.get("color", "DEFAULT"),
-                    # Full original for later recovery / inspection.
-                    # Standard Notes passes arbitrary appData keys through.
-                    "original": note,
-                },
-            },
-        },
+        "content": content,
     }
     return item, note_uuid
 
@@ -259,6 +463,11 @@ def main() -> int:
         action="store_true",
         help="Also import notes trashed in Keep (default: skip them).",
     )
+    parser.add_argument(
+        "--super",
+        action="store_true",
+        help="Import notes as Super (Lexical rich-text) notes instead of plaintext.",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input_dir)
@@ -296,7 +505,9 @@ def main() -> int:
             continue
 
         try:
-            note_item, note_uuid = convert_note(note, json_file.name)
+            note_item, note_uuid = convert_note(
+                note, json_file.name, super_mode=args.super
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"ERROR converting {json_file.name}: {exc}", file=sys.stderr)
             counts["errors"] += 1
