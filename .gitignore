@@ -1,0 +1,43 @@
+# direnv / nix
+.direnv/
+.envrc.local
+result
+result-*
+
+# uv / python venvs
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.python-version
+
+# tooling caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# editors / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# project artefacts: lokale Takeout-Daten und generierte Backups
+Takeout/
+*.takeout/
+Standard*Notes*Backup*.txt
+out/
+tmp/
+
+*.txt
