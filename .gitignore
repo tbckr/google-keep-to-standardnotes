@@ -14,7 +14,6 @@ __pycache__/
 *.egg
 build/
 dist/
-.python-version
 
 # tooling caches
 .ruff_cache/
